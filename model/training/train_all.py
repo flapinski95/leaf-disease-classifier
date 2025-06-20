@@ -1,16 +1,5 @@
 import subprocess
 
-models = ["mobilenet", "resnet", "efficientnet"]
-processes = []
-
-for model in models:
-    print(f"Trening: {model}")
-    p = subprocess.Popen(
-        ["python", "train_model.py", "--model", model]
-    )
-    processes.append(p)
-
-for p in processes:
-    p.wait()
-
-print("✅ Wszystkie modele wytrenowane!")
+for model in ["mobilenet", "resnet", "efficientnet"]:
+    print(f"🔁 Trening: {model}")
+    subprocess.run(["python3", "train_model.py", "--model", model])

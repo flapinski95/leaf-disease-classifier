@@ -9,27 +9,27 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import MobileNetV2, ResNet50, EfficientNetB0
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
-# Argumenty CLI
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=str, required=True, choices=["mobilenet", "resnet", "efficientnet"])
+parser.add_argument("--resume", action="store_true", help="Wznów trening z checkpointa")
 args = parser.parse_args()
-model_name = args.model
 
-# Konfiguracja
-DATASET_PATH = '../dataset/plant_dataset'
+model_name = args.model
+resume_training = args.resume
+
+DATASET_PATH = '../../dataset/plant_dataset'
 IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 32
 INPUT_SHAPE = (*IMAGE_SIZE, 3)
-EPOCHS_INITIAL = 30
-EPOCHS_FINE_TUNE = 10
+EPOCHS_INITIAL = 40
+EPOCHS_FINE_TUNE = 30
 RESULTS_DIR = f"results/{model_name}"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Model bazowy
 def get_base_model(name, input_shape):
     if name == "mobilenet":
         return MobileNetV2(input_shape=input_shape, include_top=False, weights="imagenet")
@@ -38,7 +38,6 @@ def get_base_model(name, input_shape):
     elif name == "efficientnet":
         return EfficientNetB0(input_shape=input_shape, include_top=False, weights="imagenet")
 
-# Augmentacja
 train_datagen = ImageDataGenerator(
     rescale=1./255,
     rotation_range=20,
@@ -65,36 +64,42 @@ valid_generator = valid_datagen.flow_from_directory(
     class_mode='categorical'
 )
 
-# Budowanie modelu
-base_model = get_base_model(model_name, INPUT_SHAPE)
-base_model.trainable = False
-
-x = base_model.output
-x = GlobalAveragePooling2D()(x)
-x = Dense(128, activation='relu')(x)
-predictions = Dense(train_generator.num_classes, activation='softmax')(x)
-model = Model(inputs=base_model.input, outputs=predictions)
-
-model.compile(optimizer=Adam(learning_rate=1e-4),
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-
+checkpoint_path = f'{RESULTS_DIR}/best_model.keras'
 callbacks = [
     EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
-    ModelCheckpoint(f'{RESULTS_DIR}/best_model.h5', monitor='val_accuracy', save_best_only=True)
+    ModelCheckpoint(checkpoint_path, monitor='val_accuracy', save_best_only=True)
 ]
 
-# Trening początkowy
+initial_epoch =15
+base_model = get_base_model(model_name, INPUT_SHAPE)
+
+if resume_training and os.path.exists(checkpoint_path):
+    print(f"✅ Wczytywanie modelu z {checkpoint_path}")
+    model = tf.keras.models.load_model(checkpoint_path)
+    base_model = model.layers[1]  
+else:
+    base_model.trainable = False
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(512, activation='relu')(x)
+    x = Dropout(0.3)(x)
+    predictions = Dense(train_generator.num_classes, activation='softmax')(x)
+    model = Model(inputs=base_model.input, outputs=predictions)
+
+    model.compile(optimizer=Adam(learning_rate=1e-4),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+
 history = model.fit(
     train_generator,
     validation_data=valid_generator,
     epochs=EPOCHS_INITIAL,
+    initial_epoch=initial_epoch,
     callbacks=callbacks
 )
 
-# Fine-tuning
 base_model.trainable = True
-for layer in base_model.layers[:-30]:
+for layer in base_model.layers[:-10]: 
     layer.trainable = False
 
 model.compile(optimizer=Adam(learning_rate=1e-5),
@@ -104,19 +109,23 @@ model.compile(optimizer=Adam(learning_rate=1e-5),
 fine_tune_history = model.fit(
     train_generator,
     validation_data=valid_generator,
-    epochs=EPOCHS_FINE_TUNE,
+    epochs=EPOCHS_INITIAL + EPOCHS_FINE_TUNE,
+    initial_epoch=EPOCHS_INITIAL,
     callbacks=callbacks
 )
 
-# Zapis modelu
-model.save(f'{RESULTS_DIR}/model')
-model.save(f'{RESULTS_DIR}/model.h5')
+model.save(f'{RESULTS_DIR}/final_model.keras')
+model.save(f'{RESULTS_DIR}/final_model.h5')
 
-# Wykresy
-def plot_and_save(history, key, title, filename):
+full_history = {
+    key: history.history.get(key, []) + fine_tune_history.history.get(key, [])
+    for key in set(history.history) | set(fine_tune_history.history)
+}
+
+def plot_and_save(hist, key, title, filename):
     plt.figure()
-    plt.plot(history.history[key], label=f'train_{key}')
-    plt.plot(history.history[f'val_{key}'], label=f'val_{key}')
+    plt.plot(hist[key], label='train_' + key)
+    plt.plot(hist['val_' + key], label='val_' + key)
     plt.title(title)
     plt.xlabel('Epoka')
     plt.ylabel(key.capitalize())
@@ -124,10 +133,9 @@ def plot_and_save(history, key, title, filename):
     plt.savefig(f'{RESULTS_DIR}/{filename}')
     plt.close()
 
-plot_and_save(history, 'accuracy', f'{model_name} - Dokładność', 'accuracy.png')
-plot_and_save(history, 'loss', f'{model_name} - Strata', 'loss.png')
+plot_and_save(full_history, 'accuracy', f'{model_name} - Dokładność', 'accuracy.png')
+plot_and_save(full_history, 'loss', f'{model_name} - Strata', 'loss.png')
 
-# Ewaluacja
 y_true = valid_generator.classes
 y_pred_probs = model.predict(valid_generator)
 y_pred = np.argmax(y_pred_probs, axis=1)

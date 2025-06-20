@@ -34,3 +34,12 @@
   color: red;
   font-weight: bold;
 }
+.warning {
+  margin-top: 1rem;
+  padding: 1rem;
+  background-color: #fff3cd;
+  border: 1px solid #ffeeba;
+  border-radius: 8px;
+  color: #856404;
+  font-weight: bold;
+}
